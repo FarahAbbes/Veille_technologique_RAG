@@ -1,0 +1,18 @@
+# Core dependencies (you already have these)
+streamlit==1.43.2
+PyPDF2==3.0.1
+pandas==2.2.3
+
+# LangChain
+langchain==0.3
+langchain-core==0.3.45
+langchain-community>=0.3.0
+langchain-text-splitters==0.3.6
+
+# Vector store and embeddings
+faiss-cpu==1.10.0
+sentence-transformers>=2.2.0
+
+# LLM and transformers
+transformers>=4.30.0
+torch>=2.0.0
