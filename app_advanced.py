@@ -2,6 +2,13 @@ import streamlit as st
 from datetime import datetime
 from advanced_rag import AdvancedRAGSystem, AdvancedRAGConfig
 
+# Google Gemini imports
+try:
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+
 
 def main():
     st.set_page_config(page_title="Chat PDF Avancé", page_icon="🧠", layout="wide")
@@ -12,10 +19,26 @@ def main():
         st.session_state.conversation_history = []
     if 'metrics' not in st.session_state:
         st.session_state.metrics = {"queries": 0, "cache_hits": 0, "avg_latency_ms": 0}
+    if 'gemini_api_key' not in st.session_state:
+        st.session_state.gemini_api_key = "AIzaSyCM78aSjZCHiEH5uxehA5f9ru2xL2mHNcQ"
 
     with st.sidebar:
         st.subheader("Configuration")
-        model_name = st.selectbox("Modèle", ["google/flan-t5-small", "google/flan-t5-base", "google/flan-t5-large"])
+        model_name = st.selectbox("Modèle", ["google/flan-t5-small", "google/flan-t5-base", "google/flan-t5-large", "Gemini"])
+        
+        # Gemini API key (only shown when Gemini is selected)
+        gemini_api_key = None
+        if model_name == "Gemini":
+            gemini_api_key = st.text_input(
+                "🔑 Clé API Gemini:",
+                value=st.session_state.get('gemini_api_key', 'AIzaSyCM78aSjZCHiEH5uxehA5f9ru2xL2mHNcQ'),
+                type="password",
+                help="Clé API Google Gemini"
+            )
+            # Store API key in session state
+            if gemini_api_key:
+                st.session_state.gemini_api_key = gemini_api_key
+        
         ttl = st.slider("TTL du cache (s)", 60, 1800, 300, 30)
         use_rerank = st.checkbox("Reranking cross-encoder", True)
         use_rrf = st.checkbox("Fusion RRF", True)
@@ -25,7 +48,14 @@ def main():
         build_index = st.button("Construire/assurer l'index")
 
     cfg = AdvancedRAGConfig(use_rerank=use_rerank, use_rrf=use_rrf, ttl_seconds=ttl, k=k, fetch_k=fetch_k, model_name=model_name)
-    rag = AdvancedRAGSystem(cfg)
+    
+    # Check if Gemini API key is required and available
+    if model_name == "Gemini":
+        if not st.session_state.get('gemini_api_key'):
+            st.error("❌ Clé API Gemini requise. Veuillez l'entrer dans la barre latérale.")
+            st.stop()
+    
+    rag = AdvancedRAGSystem(cfg, gemini_api_key=st.session_state.get('gemini_api_key') if model_name == "Gemini" else None)
 
     if build_index and pdf_docs:
         rag.ensure_index(pdf_docs)

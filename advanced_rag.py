@@ -12,6 +12,23 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 from sentence_transformers import CrossEncoder
 import torch
 
+# Google Gemini imports
+try:
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
+    # Try to import langchain wrapper, but fallback to direct API if not available
+    try:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        LANGCHAIN_GEMINI_AVAILABLE = True
+    except ImportError:
+        LANGCHAIN_GEMINI_AVAILABLE = False
+        ChatGoogleGenerativeAI = None
+except ImportError:
+    GEMINI_AVAILABLE = False
+    LANGCHAIN_GEMINI_AVAILABLE = False
+    genai = None
+    ChatGoogleGenerativeAI = None
+
 
 class QueryCacheTTL:
     def __init__(self, ttl_seconds: int = 300):
@@ -120,6 +137,28 @@ def _default_chunk(text: str, size: int = 800, overlap: int = 150) -> List[str]:
     return [_clean_text(c) for c in chunks if _clean_text(c)]
 
 
+def _get_available_gemini_models(api_key: str) -> List[str]:
+    """List available Gemini models for the given API key"""
+    if not GEMINI_AVAILABLE or genai is None:
+        return []
+    
+    try:
+        genai.configure(api_key=api_key)
+        models = genai.list_models()
+        available = []
+        for model in models:
+            # Filter for text generation models
+            if 'generateContent' in model.supported_generation_methods:
+                model_name = model.name.replace('models/', '')
+                # Only include Gemini models
+                if 'gemini' in model_name.lower():
+                    available.append(model_name)
+        return available if available else []
+    except Exception as e:
+        # If listing fails, return empty list to try common models
+        return []
+
+
 @dataclass
 class AdvancedRAGConfig:
     use_rerank: bool = True
@@ -128,22 +167,82 @@ class AdvancedRAGConfig:
     k: int = 5
     fetch_k: int = 12
     model_name: str = "google/flan-t5-base"
+    gemini_api_key: Optional[str] = None
 
 
 class AdvancedRAGSystem:
-    def __init__(self, config: AdvancedRAGConfig):
+    def __init__(self, config: AdvancedRAGConfig, gemini_api_key: Optional[str] = None):
         self.config = config
         self.cache = QueryCacheTTL(ttl_seconds=config.ttl_seconds)
         self.reranker = DocumentReRanker()
-        self.device = torch.device("cpu")
-        self.tokenizer = AutoTokenizer.from_pretrained(config.model_name)
-        self.model = AutoModelForSeq2SeqLM.from_pretrained(
-            config.model_name,
-            torch_dtype=torch.float32,
-            low_cpu_mem_usage=False
-        )
-        self.model.to(self.device)
-        self.model.eval()
+        self.use_gemini = config.model_name == "Gemini"
+        
+        if self.use_gemini:
+            if not GEMINI_AVAILABLE:
+                raise ImportError("google-generativeai n'est pas installé. Installez-le avec: pip install google-generativeai")
+            api_key = gemini_api_key or config.gemini_api_key
+            if not api_key:
+                raise ValueError("Clé API Gemini requise")
+            # Store API key for model initialization
+            self.gemini_api_key = api_key
+            genai.configure(api_key=api_key)
+            
+            # Try to get available models, fallback to common ones
+            available_models = _get_available_gemini_models(api_key)
+            if not available_models:
+                available_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro", "gemini-2.0-flash-exp"]
+            
+            # Try to initialize with first available model using direct API
+            self.gemini_model = None
+            self.gemini_model_name = None
+            for model_name in available_models:
+                try:
+                    # Try direct API first (more reliable)
+                    test_model = genai.GenerativeModel(model_name)
+                    # Test with a simple prompt
+                    test_response = test_model.generate_content("test")
+                    self.gemini_model = test_model
+                    self.gemini_model_name = model_name
+                    break
+                except Exception:
+                    # Try langchain wrapper if available
+                    if LANGCHAIN_GEMINI_AVAILABLE and ChatGoogleGenerativeAI:
+                        try:
+                            self.gemini_model = ChatGoogleGenerativeAI(
+                                model=model_name,
+                                google_api_key=api_key,
+                                temperature=0.7,
+                                max_output_tokens=2048
+                            )
+                            self.gemini_model_name = model_name
+                            break
+                        except Exception:
+                            continue
+                    continue
+            
+            if self.gemini_model is None:
+                error_msg = f"Aucun modèle Gemini disponible avec cette clé API.\n"
+                error_msg += f"Modèles testés: {available_models}\n"
+                error_msg += "Vérifiez:\n"
+                error_msg += "1. Que votre clé API est valide sur https://ai.google.dev/\n"
+                error_msg += "2. Que votre région est supportée par l'API Gemini\n"
+                error_msg += "3. Que vous avez activé l'API Generative Language dans Google Cloud Console"
+                raise ValueError(error_msg)
+            
+            self.tokenizer = None
+            self.model = None
+            self.device = None
+        else:
+            self.device = torch.device("cpu")
+            self.tokenizer = AutoTokenizer.from_pretrained(config.model_name)
+            self.model = AutoModelForSeq2SeqLM.from_pretrained(
+                config.model_name,
+                dtype=torch.float32,
+                low_cpu_mem_usage=False
+            )
+            self.model.to(self.device)
+            self.model.eval()
+            self.gemini_model = None
 
     def _retrieve(self, query: str) -> List[Any]:
         vs = _load_index()
@@ -192,16 +291,82 @@ class AdvancedRAGSystem:
             f"Question: {question}\n\n"
             "Réponse:"
         )
-        encoding = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024)
-        encoding = {k: v.to(self.device) for k, v in encoding.items()}
-        with torch.no_grad():
-            outputs = self.model.generate(
-                **encoding,
-                max_new_tokens=256,
-                do_sample=False,
-                num_beams=4,
-            )
-        out = self.tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
+        
+        if self.use_gemini:
+            # Use Gemini API - try current model first, then fallback to others
+            out = None
+            last_error = None
+            
+            # First try the initialized model
+            try:
+                # Check if using direct API or langchain wrapper
+                if hasattr(self.gemini_model, 'generate_content'):
+                    # Direct API
+                    response = self.gemini_model.generate_content(prompt)
+                    out = response.text.strip()
+                elif hasattr(self.gemini_model, 'invoke'):
+                    # Langchain wrapper
+                    response = self.gemini_model.invoke(prompt)
+                    out = response.content.strip()
+                else:
+                    raise ValueError("Format de modèle Gemini non reconnu")
+            except Exception as e:
+                last_error = e
+                # If current model fails, try other available models
+                available_models = _get_available_gemini_models(self.gemini_api_key)
+                if not available_models:
+                    available_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro", "gemini-2.0-flash-exp"]
+                
+                for model_name in available_models:
+                    if model_name == self.gemini_model_name:
+                        continue  # Already tried
+                    try:
+                        # Try direct API first (more reliable)
+                        test_model = genai.GenerativeModel(model_name)
+                        response = test_model.generate_content(prompt)
+                        out = response.text.strip()
+                        self.gemini_model = test_model
+                        self.gemini_model_name = model_name
+                        break  # Success
+                    except Exception:
+                        # Try langchain wrapper if available
+                        if LANGCHAIN_GEMINI_AVAILABLE and ChatGoogleGenerativeAI:
+                            try:
+                                self.gemini_model = ChatGoogleGenerativeAI(
+                                    model=model_name,
+                                    google_api_key=self.gemini_api_key,
+                                    temperature=0.7,
+                                    max_output_tokens=2048
+                                )
+                                self.gemini_model_name = model_name
+                                response = self.gemini_model.invoke(prompt)
+                                out = response.content.strip()
+                                break  # Success
+                            except Exception as e:
+                                last_error = e
+                                continue
+                        continue
+            
+            if out is None:
+                error_msg = f"Aucun modèle Gemini disponible.\n"
+                error_msg += f"Dernière erreur: {str(last_error)}\n"
+                error_msg += "Vérifiez:\n"
+                error_msg += "1. Que votre clé API est valide sur https://ai.google.dev/\n"
+                error_msg += "2. Que votre région est supportée par l'API Gemini\n"
+                error_msg += "3. Que vous avez activé l'API Generative Language dans Google Cloud Console"
+                raise ValueError(error_msg)
+        else:
+            # Use HuggingFace model
+            encoding = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024)
+            encoding = {k: v.to(self.device) for k, v in encoding.items()}
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **encoding,
+                    max_new_tokens=256,
+                    do_sample=False,
+                    num_beams=4,
+                )
+            out = self.tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
         t1 = time.time()
         meta = {
             "latency_ms": int((t1 - t0) * 1000),

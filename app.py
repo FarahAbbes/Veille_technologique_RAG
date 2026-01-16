@@ -15,6 +15,23 @@ from typing import Optional, List, Any
 from transformers import pipeline
 import torch
 
+# Google Gemini imports
+try:
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
+    # Try to import langchain wrapper, but fallback to direct API if not available
+    try:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        LANGCHAIN_GEMINI_AVAILABLE = True
+    except ImportError:
+        LANGCHAIN_GEMINI_AVAILABLE = False
+        ChatGoogleGenerativeAI = None
+except ImportError:
+    GEMINI_AVAILABLE = False
+    LANGCHAIN_GEMINI_AVAILABLE = False
+    genai = None
+    ChatGoogleGenerativeAI = None
+
 
 class HuggingFaceLLM(LLM):
     """Custom LLM wrapper for HuggingFace models with enhanced generation"""
@@ -96,10 +113,44 @@ def get_vector_store(text_chunks):
     return vector_store
 
 
+def get_available_gemini_models(api_key: str):
+    """List available Gemini models for the given API key"""
+    if not GEMINI_AVAILABLE or genai is None:
+        return []
+    
+    try:
+        genai.configure(api_key=api_key)
+        models = genai.list_models()
+        available = []
+        for model in models:
+            # Filter for text generation models
+            if 'generateContent' in model.supported_generation_methods:
+                model_name = model.name.replace('models/', '')
+                # Only include Gemini models
+                if 'gemini' in model_name.lower():
+                    available.append(model_name)
+        return available
+    except Exception as e:
+        # If listing fails, return common model names to try
+        return ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro", "gemini-2.0-flash-exp"]
+
+
 @st.cache_resource
-def load_model(model_name):
+def load_model(model_name, api_key=None):
     """Load and cache the model"""
-    if model_name == "FLAN-T5 Small (fastest)":
+    if model_name == "Gemini":
+        if not GEMINI_AVAILABLE:
+            raise ImportError("langchain-google-genai n'est pas installé. Installez-le avec: pip install langchain-google-genai")
+        if not api_key:
+            raise ValueError("Clé API Gemini requise")
+        # Try gemini-1.5-flash first (most widely available)
+        return ChatGoogleGenerativeAI(
+            model="gemini-1.5-flash",
+            google_api_key=api_key,
+            temperature=0.7,
+            max_output_tokens=2048
+        )
+    elif model_name == "FLAN-T5 Small (fastest)":
         return HuggingFaceLLM(model_name="google/flan-t5-small")
     elif model_name == "FLAN-T5 Base (balanced)":
         return HuggingFaceLLM(model_name="google/flan-t5-base")
@@ -218,7 +269,15 @@ def user_input(user_question, model_name, pdf_docs, conversation_history):
 
         # Get model
         with st.spinner("🤔 Génération de la réponse en cours..."):
-            model = load_model(model_name)
+            # Get Gemini API key from session state if needed
+            api_key = None
+            if model_name == "Gemini":
+                api_key = st.session_state.get('gemini_api_key', None)
+                if not api_key:
+                    st.error("❌ Clé API Gemini requise. Veuillez l'entrer dans la barre latérale.")
+                    return
+            
+            model = load_model(model_name, api_key=api_key)
             
             # Create context from documents
             context = format_docs(docs)
@@ -227,7 +286,61 @@ def user_input(user_question, model_name, pdf_docs, conversation_history):
             prompt = create_enhanced_prompt(context, user_question)
             
             # Generate response
-            response_text = model._call(prompt)
+            if model_name == "Gemini":
+                # Gemini uses direct API or invoke method
+                response_text = None
+                last_error = None
+                
+                try:
+                    # Check if using direct API or langchain wrapper
+                    if hasattr(model, 'generate_content'):
+                        # Direct API
+                        response = model.generate_content(prompt)
+                        response_text = response.text.strip()
+                    elif hasattr(model, 'invoke'):
+                        # Langchain wrapper
+                        response = model.invoke(prompt)
+                        response_text = response.content.strip()
+                    else:
+                        raise ValueError("Format de modèle Gemini non reconnu")
+                except Exception as e:
+                    last_error = e
+                    # If current model fails, try other available models
+                    available_models = get_available_gemini_models(api_key)
+                    if not available_models:
+                        available_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro", "gemini-2.0-flash-exp"]
+                    
+                    for gemini_model_name in available_models:
+                        try:
+                            # Try direct API first
+                            test_model = genai.GenerativeModel(gemini_model_name)
+                            response = test_model.generate_content(prompt)
+                            response_text = response.text.strip()
+                            break  # Success
+                        except Exception:
+                            # Try langchain wrapper if available
+                            if LANGCHAIN_GEMINI_AVAILABLE and ChatGoogleGenerativeAI:
+                                try:
+                                    test_model = ChatGoogleGenerativeAI(
+                                        model=gemini_model_name,
+                                        google_api_key=api_key,
+                                        temperature=0.7,
+                                        max_output_tokens=2048
+                                    )
+                                    response = test_model.invoke(prompt)
+                                    response_text = response.content.strip()
+                                    break  # Success
+                                except Exception as e:
+                                    last_error = e
+                                    continue
+                            continue
+                
+                if response_text is None:
+                    st.error(f"❌ Aucun modèle Gemini disponible. Dernière erreur: {str(last_error)}")
+                    st.info("💡 Vérifiez votre clé API et les modèles disponibles sur Google AI Studio: https://ai.google.dev/")
+                    return
+            else:
+                response_text = model._call(prompt)
             
             # Validate response
             validated_response, confidence = validate_response(response_text, context)
@@ -354,6 +467,9 @@ def main():
     
     if 'doc_metadata' not in st.session_state:
         st.session_state.doc_metadata = None
+    
+    if 'gemini_api_key' not in st.session_state:
+        st.session_state.gemini_api_key = "AIzaSyCM78aSjZCHiEH5uxehA5f9ru2xL2mHNcQ"
 
     # Sidebar
     with st.sidebar:
@@ -362,9 +478,22 @@ def main():
         # Model selection
         model_name = st.selectbox(
             "🤖 Modèle IA:",
-            ("FLAN-T5 Small (fastest)", "FLAN-T5 Base (balanced)", "FLAN-T5 Large (best quality)"),
+            ("FLAN-T5 Small (fastest)", "FLAN-T5 Base (balanced)", "FLAN-T5 Large (best quality)", "Gemini"),
             help="Choisissez un modèle selon vos besoins de vitesse/qualité"
         )
+        
+        # Gemini API key (only shown when Gemini is selected)
+        gemini_api_key = None
+        if model_name == "Gemini":
+            gemini_api_key = st.text_input(
+                "🔑 Clé API Gemini:",
+                value=st.session_state.get('gemini_api_key', 'AIzaSyCM78aSjZCHiEH5uxehA5f9ru2xL2mHNcQ'),
+                type="password",
+                help="Clé API Google Gemini"
+            )
+            # Store API key in session state
+            if gemini_api_key:
+                st.session_state.gemini_api_key = gemini_api_key
 
         st.markdown("---")
 
