@@ -80,7 +80,68 @@ def main():
         m_assistant.write(ans)
         m_assistant.caption(f"Sources: {src_text} • Latence: {meta.get('latency_ms', 0)} ms • RRF: {cfg.use_rrf} • Rerank: {cfg.use_rerank} • {datetime.now().strftime('%H:%M:%S')}")
 
-        st.session_state.conversation_history.append((q, ans, model_name, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), src_text, meta.get('latency_ms', 0)))
+        # Afficher les scores d'évaluation
+        evaluation = meta.get("evaluation", {})
+        if evaluation:
+            st.markdown("---")
+            st.markdown("### 📊 Score d'Évaluation de la Réponse")
+            
+            # Score global avec indicateur visuel
+            overall_score = evaluation.get("overall_score", 0.0)
+            score_percentage = int(overall_score * 100)
+            
+            # Couleur selon le score
+            if overall_score >= 0.8:
+                score_color = "🟢"
+                score_label = "Excellent"
+            elif overall_score >= 0.6:
+                score_color = "🟡"
+                score_label = "Bon"
+            elif overall_score >= 0.4:
+                score_color = "🟠"
+                score_label = "Moyen"
+            else:
+                score_color = "🔴"
+                score_label = "Faible"
+            
+            # Afficher le score global
+            col1, col2, col3 = st.columns([2, 1, 1])
+            with col1:
+                st.metric(f"{score_color} Score Global", f"{score_percentage}%", score_label)
+            with col2:
+                st.metric("Pertinence Question", f"{int(evaluation.get('relevance_to_question', 0) * 100)}%")
+            with col3:
+                st.metric("Pertinence Contexte", f"{int(evaluation.get('relevance_to_context', 0) * 100)}%")
+            
+            # Barre de progression pour le score global
+            st.progress(overall_score)
+            
+            # Détails des scores
+            with st.expander("📈 Détails des Scores d'Évaluation"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown(f"**Pertinence à la Question:** {evaluation.get('relevance_to_question', 0):.2f}")
+                    st.progress(evaluation.get('relevance_to_question', 0))
+                    
+                    st.markdown(f"**Pertinence au Contexte:** {evaluation.get('relevance_to_context', 0):.2f}")
+                    st.progress(evaluation.get('relevance_to_context', 0))
+                
+                with col2:
+                    st.markdown(f"**Complétude:** {evaluation.get('completeness', 0):.2f}")
+                    st.progress(evaluation.get('completeness', 0))
+                    
+                    st.markdown(f"**Adéquation Longueur:** {evaluation.get('length_adequacy', 0):.2f}")
+                    st.progress(evaluation.get('length_adequacy', 0))
+                
+                st.markdown("---")
+                st.markdown("**Légende:**")
+                st.markdown("- **Pertinence Question:** Correspondance entre la réponse et les mots-clés de la question")
+                st.markdown("- **Pertinence Contexte:** Utilisation des informations du contexte fourni")
+                st.markdown("- **Complétude:** Longueur et structure de la réponse")
+                st.markdown("- **Adéquation Longueur:** Longueur appropriée par rapport à la question")
+
+        st.session_state.conversation_history.append((q, ans, model_name, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), src_text, meta.get('latency_ms', 0), evaluation))
 
     col1, col2, col3 = st.columns(3)
     col1.metric("Questions", st.session_state.metrics["queries"])

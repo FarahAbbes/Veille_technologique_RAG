@@ -137,6 +137,97 @@ def _default_chunk(text: str, size: int = 800, overlap: int = 150) -> List[str]:
     return [_clean_text(c) for c in chunks if _clean_text(c)]
 
 
+def evaluate_response(question: str, answer: str, context: str) -> Dict[str, Any]:
+    """
+    Évalue la qualité d'une réponse générée par rapport à la question et au contexte.
+    Retourne un dictionnaire avec différents scores et métriques.
+    """
+    scores = {
+        "relevance_to_question": 0.0,  # Pertinence par rapport à la question
+        "relevance_to_context": 0.0,   # Pertinence par rapport au contexte
+        "completeness": 0.0,            # Complétude de la réponse
+        "length_adequacy": 0.0,         # Adéquation de la longueur
+        "overall_score": 0.0            # Score global
+    }
+    
+    if not answer or not question:
+        return scores
+    
+    # Normaliser les textes pour comparaison
+    question_lower = question.lower()
+    answer_lower = answer.lower()
+    context_lower = context.lower()
+    
+    # 1. Pertinence par rapport à la question (0-1)
+    # Vérifie si la réponse contient des mots-clés de la question
+    question_words = set(re.findall(r'\b\w+\b', question_lower))
+    answer_words = set(re.findall(r'\b\w+\b', answer_lower))
+    common_words = question_words.intersection(answer_words)
+    
+    if len(question_words) > 0:
+        scores["relevance_to_question"] = min(1.0, len(common_words) / len(question_words))
+    
+    # 2. Pertinence par rapport au contexte (0-1)
+    # Vérifie si la réponse utilise des informations du contexte
+    context_words = set(re.findall(r'\b\w{4,}\b', context_lower))  # Mots de 4+ caractères
+    answer_context_words = set(re.findall(r'\b\w{4,}\b', answer_lower))
+    context_overlap = context_words.intersection(answer_context_words)
+    
+    if len(context_words) > 0:
+        scores["relevance_to_context"] = min(1.0, len(context_overlap) / min(len(context_words), 50))
+    
+    # 3. Complétude (0-1)
+    # Vérifie si la réponse semble complète (pas de phrases tronquées, longueur raisonnable)
+    answer_length = len(answer.strip())
+    if answer_length < 20:
+        scores["completeness"] = 0.3
+    elif answer_length < 50:
+        scores["completeness"] = 0.6
+    elif answer_length < 200:
+        scores["completeness"] = 0.9
+    elif answer_length < 500:
+        scores["completeness"] = 1.0
+    else:
+        scores["completeness"] = 0.8  # Trop long peut être moins bien
+    
+    # Vérifier les phrases incomplètes
+    if answer.strip() and not answer.strip().endswith(('.', '!', '?', ':', ';')):
+        scores["completeness"] *= 0.9
+    
+    # 4. Adéquation de la longueur (0-1)
+    # Une bonne réponse devrait avoir une longueur appropriée
+    ideal_length = len(question) * 3  # Réponse environ 3x la longueur de la question
+    length_ratio = answer_length / ideal_length if ideal_length > 0 else 1.0
+    
+    if 0.5 <= length_ratio <= 2.0:
+        scores["length_adequacy"] = 1.0
+    elif 0.3 <= length_ratio < 0.5 or 2.0 < length_ratio <= 3.0:
+        scores["length_adequacy"] = 0.7
+    else:
+        scores["length_adequacy"] = 0.4
+    
+    # 5. Score global (moyenne pondérée)
+    weights = {
+        "relevance_to_question": 0.3,
+        "relevance_to_context": 0.4,
+        "completeness": 0.2,
+        "length_adequacy": 0.1
+    }
+    
+    scores["overall_score"] = (
+        scores["relevance_to_question"] * weights["relevance_to_question"] +
+        scores["relevance_to_context"] * weights["relevance_to_context"] +
+        scores["completeness"] * weights["completeness"] +
+        scores["length_adequacy"] * weights["length_adequacy"]
+    )
+    
+    # Arrondir les scores à 2 décimales
+    for key in scores:
+        scores[key] = round(scores[key], 2)
+    
+    return scores
+
+
 def _get_available_gemini_models(api_key: str) -> List[str]:
     """List available Gemini models for the given API key"""
     if not GEMINI_AVAILABLE or genai is None:
@@ -368,12 +459,17 @@ class AdvancedRAGSystem:
                 )
             out = self.tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
         t1 = time.time()
+        
+        # Évaluer la réponse
+        evaluation_scores = evaluate_response(question, out, ctx)
+        
         meta = {
             "latency_ms": int((t1 - t0) * 1000),
             "sources": self._sources(docs),
             "cache": self.cache.stats(),
             "used_rrf": self.config.use_rrf,
             "used_rerank": self.config.use_rerank,
+            "evaluation": evaluation_scores,
         }
         self.cache.set(question, (out, meta))
         return out, meta
