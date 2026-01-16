@@ -1,4 +1,4 @@
-# 📚 Chat with Multiple PDFs
+# 📚 Chat PDF Intelligent
 
 Interact with multiple PDF files using powerful AI models like **Gemini 1.5 (Google AI)** to extract insights, analyze financial data, and answer questions based on uploaded documents. This app is especially useful for analyzing **annual reports** and **financial statements** of Indian stock market companies.
 
@@ -10,8 +10,8 @@ Interact with multiple PDF files using powerful AI models like **Gemini 1.5 (Goo
 
 - 📄 Upload multiple PDF files
 - 🤖 Ask questions based on the content of the PDFs
-- 🧠 Uses LangChain and Google Gemini 1.5 (`gemini-1.5-flash`) for contextual answers
-- 🗃️ Embeds content using `GoogleGenerativeAIEmbeddings` and stores in FAISS vector database
+- 🧠 LangChain avec LLM HuggingFace FLAN‑T5 via transformers
+- 🗃️ Embeddings `all-MiniLM-L6-v2` et index FAISS local
 - 📊 Specialized for analyzing financial reports, related-party transactions, and remuneration
 - 🗨️ Chat-like interface with user/bot avatars
 - 📥 Export conversation history as CSV
@@ -48,6 +48,10 @@ uv sync
 
 ```bash
 streamlit run app.py
+
+### 5. Advanced App
+
+streamlit run app_advanced.py
 ```
 
 ---
@@ -79,17 +83,37 @@ To use Gemini models and embeddings:
 ## 📁 File Structure
 
 ```
-├── app.py               # Main Streamlit app
-├── faiss_index/         # Folder where vectorstore is saved
-├── requirements.txt     # Required Python packages
-└── README.md            # You're here!
+├── app.py
+├── app_advanced.py
+├── advanced_rag.py
+├── adaptive_chunking.py
+├── multimodal_extractor.py
+├── faiss_index/
+├── requirements.txt
+├── GUIDE_INSTALLATION.md
+└── README.md
 ```
 
 ---
 
-## 🧠 Prompt Template Logic
+## 🧠 Architecture Avancée
 
-This tool is **finance-aware**. The prompt guides the LLM to:
+Système RAG Avancé:
+- Cache de requêtes avec TTL
+- Reranking par cross‑encoder
+- Fusion de requêtes par RRF
+- Orchestration complète et métriques
+
+Chunking Intelligent:
+- Chunking adaptatif par type de document
+- Mode hybride multi‑stratégies
+- Optimisation de segments
+
+Multi‑modalité:
+- Extraction d’images
+- OCR Tesseract
+- Tables Camelot/Tabula
+- Formats DOCX/PPTX/XLSX
 
 - Evaluate financial statements from PDFs
 - Detect irregularities or red flags
@@ -98,12 +122,12 @@ This tool is **finance-aware**. The prompt guides the LLM to:
 
 ---
 
-## 🧪 Sample Use Cases
+## 🧪 Quick Start Avancé
 
-- Analyze 5 annual reports to compare **debt-to-equity ratios**
-- Identify suspicious **related-party transactions**
-- Audit **CFO to Net Profit** conversion trends
-- Track increase in **Key Managerial Personnel (KMP)** pay
+1. Lancer `app_advanced.py`
+2. Assurer l’index via la sidebar
+3. Activer RRF et Rerank si nécessaire
+4. Ajuster TTL et k
 
 ---
 

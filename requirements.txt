@@ -16,3 +16,16 @@ sentence-transformers>=2.2.0
 # LLM and transformers
 transformers>=4.30.0
 torch>=2.0.0
+
+# Optional multimodal and document processing
+pymupdf>=1.24.0
+pytesseract>=0.3.10
+Pillow>=10.0.0
+camelot-py>=0.11.0
+tabula-py>=2.9.0
+python-docx>=1.1.0
+python-pptx>=0.6.23
+openpyxl>=3.1.5
+
+# Testing
+pytest>=8.3.0
